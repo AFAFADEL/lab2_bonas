@@ -507,3 +507,4 @@ This lab demonstrates:
 * How to **diagnose and fix container crashes**
 
 These concepts are essential for managing **stateful workloads and production deployments** in Kubernetes.
+
