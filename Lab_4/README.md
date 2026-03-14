@@ -107,3 +107,403 @@ The README must contain the following sections:
 | `manifests/v1/logger-deployment.yaml` | Original v1 Deployment with `emptyDir` volume mounted at `/log` |
 | `manifests/v2/logger-deployment.yaml` | Fixed v2 Deployment (after troubleshooting) with correct volume mount |
 | `manifests/service/logger-service.yaml` | Service manifest showing both v1 and v2 selector states (or final version with v2 selector) |
+------------------
+# Lab 4: Deployment Strategies and Storage Troubleshooting
+
+## Lab Summary
+
+In this lab we implemented a logging application in Kubernetes using a **Deployment with emptyDir storage**.
+We tested how the storage behaves during **container restarts vs pod recreation**.
+
+Then we implemented a **Blue-Green deployment strategy** to update the logging application from **version v1 to v2** using labels and services.
+During the update we intentionally introduced a configuration bug, diagnosed the failure, and fixed it.
+
+---
+
+# Storage Behavior Explanation
+
+## 1️⃣ Container Crash and Restart
+
+When the container inside a pod crashes:
+
+* Kubernetes restarts the container automatically.
+* The **pod itself is not deleted**.
+* The **emptyDir volume remains attached to the pod**.
+
+Result:
+
+```
+Log file remains available after container restart.
+```
+
+This means the data written inside `/log` is preserved.
+
+---
+
+## 2️⃣ Pod Deletion and Recreation
+
+When the pod itself is deleted:
+
+* The Deployment creates a **new pod**.
+* A **new emptyDir volume is created**.
+* The previous data is lost.
+
+Result:
+
+```
+All previous logs are removed because emptyDir exists only for the lifetime of the pod.
+```
+
+---
+
+# Part 1: Logger Deployment (v1)
+
+Create directory structure:
+
+```
+manifests/
+ ├── v1/
+ ├── v2/
+ └── service/
+```
+
+Create file:
+
+```
+manifests/v1/logger-deployment.yaml
+```
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: logger
+  namespace: staging
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: logger
+      version: v1
+  template:
+    metadata:
+      labels:
+        app: logger
+        version: v1
+    spec:
+      containers:
+      - name: logger
+        image: busybox:latest
+        command:
+        - /bin/sh
+        - -c
+        - while true; do date >> /log/output.txt; sleep 10; done
+        volumeMounts:
+        - name: log-volume
+          mountPath: /log
+      volumes:
+      - name: log-volume
+        emptyDir: {}
+```
+
+Apply deployment:
+
+```
+kubectl apply -f manifests/v1/logger-deployment.yaml
+```
+
+---
+
+# Part 2: Testing Storage Behavior
+
+Get pod name:
+
+```
+kubectl get pods -n staging
+```
+
+Exec into pod:
+
+```
+kubectl exec -it <pod-name> -n staging -- sh
+```
+
+Kill the main process:
+
+```
+kill 1
+```
+
+Observe restart:
+
+```
+kubectl get pods -n staging
+```
+
+Check logs again:
+
+```
+cat /log/output.txt
+```
+
+The file still exists.
+
+---
+
+## Delete Pod
+
+Delete the pod:
+
+```
+kubectl delete pod <pod-name> -n staging
+```
+
+Wait for Deployment to recreate it.
+
+Check logs again:
+
+```
+kubectl exec -it <new-pod> -n staging -- cat /log/output.txt
+```
+
+Result:
+
+```
+Old logs are gone because a new emptyDir was created.
+```
+
+---
+
+# Part 3: Create Logger Service
+
+Create file:
+
+```
+manifests/service/logger-service.yaml
+```
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: logger-service
+  namespace: staging
+spec:
+  type: ClusterIP
+  selector:
+    version: v1
+  ports:
+  - port: 80
+    targetPort: 80
+```
+
+Apply service:
+
+```
+kubectl apply -f manifests/service/logger-service.yaml
+```
+
+---
+
+# Part 4: Logger v2 Deployment (With Intentional Bug)
+
+Create file:
+
+```
+manifests/v2/logger-deployment.yaml
+```
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: logger-v2
+  namespace: staging
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: logger
+      version: v2
+  template:
+    metadata:
+      labels:
+        app: logger
+        version: v2
+    spec:
+      containers:
+      - name: logger
+        image: busybox:latest
+        command:
+        - /bin/sh
+        - -c
+        - while true; do echo "$(date) - Host: $(hostname)" >> /log/output.txt; sleep 10; done
+        volumeMounts:
+        - name: log-volume
+          mountPath: /var/log/app
+      volumes:
+      - name: log-volume
+        emptyDir: {}
+```
+
+Apply deployment:
+
+```
+kubectl apply -f manifests/v2/logger-deployment.yaml
+```
+
+---
+
+# Part 5: Blue-Green Switch
+
+Update the service to point to v2.
+
+Edit the service:
+
+```
+kubectl edit service logger-service -n staging
+```
+
+Change selector:
+
+```
+version: v2
+```
+
+---
+
+# Troubleshooting Section
+
+## Problem
+
+One of the `logger-v2` pods enters:
+
+```
+CrashLoopBackOff
+```
+
+---
+
+## Cause
+
+The container writes logs to:
+
+```
+/log/output.txt
+```
+
+But the volume is mounted at:
+
+```
+/var/log/app
+```
+
+This means the `/log` directory does not exist.
+
+---
+
+## Diagnosis Commands
+
+Check pod status:
+
+```
+kubectl get pods -n staging
+```
+
+Describe pod:
+
+```
+kubectl describe pod <pod-name> -n staging
+```
+
+Check container logs:
+
+```
+kubectl logs <pod-name> -n staging
+```
+
+---
+
+## Fix
+
+Edit the v2 deployment and correct the mount path:
+
+```
+mountPath: /log
+```
+
+Correct version:
+
+```yaml
+volumeMounts:
+- name: log-volume
+  mountPath: /log
+```
+
+Apply again:
+
+```
+kubectl apply -f manifests/v2/logger-deployment.yaml
+```
+
+---
+
+# Verification
+
+Check pods:
+
+```
+kubectl get pods -n staging
+```
+
+Check logs:
+
+```
+kubectl logs <v2-pod-name> -n staging
+```
+
+Expected output:
+
+```
+2026-03-14 - Host: logger-v2-pod
+```
+
+Exec into pod:
+
+```
+kubectl exec -it <pod-name> -n staging -- sh
+```
+
+Verify log file:
+
+```
+cat /log/output.txt
+```
+
+---
+
+# Commands Used
+
+```
+kubectl create namespace staging
+kubectl apply -f <file>
+kubectl get pods -n staging
+kubectl exec -it <pod> -- sh
+kubectl delete pod <pod>
+kubectl describe pod <pod>
+kubectl logs <pod>
+kubectl edit service logger-service
+```
+
+---
+
+# Conclusion
+
+This lab demonstrates:
+
+* How **emptyDir storage behaves in Kubernetes**
+* How **Deployments recreate pods automatically**
+* How to perform **Blue-Green deployments using labels and services**
+* How to **diagnose and fix container crashes**
+
+These concepts are essential for managing **stateful workloads and production deployments** in Kubernetes.

@@ -1,0 +1,36 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: logger
+  namespace: staging
+
+spec:
+  replicas: 1
+
+  selector:
+    matchLabels:
+      app: logger
+      version: v1
+
+  template:
+    metadata:
+      labels:
+        app: logger
+        version: v1
+
+    spec:
+      containers:
+      - name: logger
+        image: busybox:latest
+        command:
+        - /bin/sh
+        - -c
+        - while true; do date >> /log/output.txt; sleep 10; done
+
+        volumeMounts:
+        - name: log-volume
+          mountPath: /log
+
+      volumes:
+      - name: log-volume
+        emptyDir: {}

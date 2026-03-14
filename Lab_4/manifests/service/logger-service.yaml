@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: logger-service
+  namespace: staging
+
+spec:
+  type: ClusterIP
+
+  selector:
+    version: v1
+
+  ports:
+  - port: 80
+    targetPort: 80
